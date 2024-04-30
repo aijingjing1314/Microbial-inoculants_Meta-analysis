@@ -946,6 +946,572 @@ p31
 dev.off()
 
 
+#######Cohesion
+#find the number of zeroes in a vector
+zero <- function(vec){
+  num.zero <- length(which(vec == 0))
+  return(num.zero)
+}
+#create function that averages only negative values in a vector
+neg.mean <- function(vector){
+  neg.vals <- vector[which(vector < 0)]
+  n.mean <- mean(neg.vals)
+  if(length(neg.vals) == 0) n.mean <- 0
+  return(n.mean)
+}
+#create function that averages only positive values in a vector
+pos.mean <- function(vector){
+  pos.vals <- vector[which(vector > 0)]
+  p.mean <- mean(pos.vals)
+  if(length(pos.vals) == 0) p.mean <- 0
+  return(p.mean)
+}
+# Read in dataset
+## Data should be in a matrix where each row is a sample. 
+b <- read.csv("CK.csv",header = T, row.names = 1,sep = ",")
+# # Read in custom correlation matrix, if desired. Must set "use.custom.cors" to TRUE
+# if(use.custom.cors == T) {
+#   custom.cor.mat <- read.csv("CK.csv", header = T, row.names = 1)
+#   custom.cor.mat <- as.matrix(custom.cor.mat)
+#   #Check that correlation matrix and abundance matrix have the same dimension
+#   print(dim(b)[2] == dim(custom.cor.mat)[2])
+# }
+
+
+# Suggested steps to re-format data. At the end of these steps, the data should be in a matrix "c" where there are no empty samples or blank taxon columns. 
+c <- as.matrix(b)
+c <- c[rowSums(c) > 0, colSums(c) > 0]
+
+# Optionally re-order dataset to be in chronological order. Change date format for your data. 
+#c <- c[order(as.Date(rownames(c), format = "%m/%d/%Y")), ]
+
+# Save total number of individuals in each sample in the original matrix. This will be 1 if data are in relative abundance, but not if matrix c is count data
+rowsums.orig <- rowSums(c)
+
+# Based on persistence cutoff, define a cutoff for the number of zeroes allowed in a taxon's distribution
+
+zero.cutoff <- ceiling(0.1 * dim(c)[1])
+
+# Remove taxa that are below the persistence cutoff
+d <- c[ , apply(c, 2, zero) < (dim(c)[1]-zero.cutoff) ]
+# Remove any samples that no longer have any individuals, due to removing taxa
+d <- d[rowSums(d) > 0, ]
+
+# #If using custom correlation matrix, need to remove rows/columns corresponding to the taxa below persistence cutoff
+# if(use.custom.cors == T){
+#   custom.cor.mat.sub <- custom.cor.mat[apply(c, 2, zero) < (dim(c)[1]-zero.cutoff), apply(c, 2, zero) < (dim(c)[1]-zero.cutoff)]
+# }
+
+# Create relative abundance matrix.  
+rel.d <- d / rowsums.orig
+# Optionally, check to see what proportion of the community is retained after cutting out taxa
+hist(rowSums(rel.d))
+
+# Create observed correlation matrix
+cor.mat.true <- cor(rel.d)
+
+# Create vector to hold median otu-otu correlations for initial otu
+med.tax.cors <- vector()
+# Run this loop for the null model to get expected pairwise correlations
+# Bypass null model if the option to input custom correlation matrix is TRUE
+use.custom.cors <- F
+tax.shuffle <- T
+iter <- 200
+if(use.custom.cors == F) {
+  ifelse(tax.shuffle, {
+    for(which.taxon in 1:dim(rel.d)[2]){
+      
+      #create vector to hold correlations from every permutation for each single otu
+      ## perm.cor.vec.mat stands for permuted correlations vector matrix
+      perm.cor.vec.mat <- vector()
+      
+      for(i in 1:iter){
+        #Create empty matrix of same dimension as rel.d
+        perm.rel.d <- matrix(numeric(0), dim(rel.d)[1], dim(rel.d)[2])
+        rownames(perm.rel.d) <- rownames(rel.d)
+        colnames(perm.rel.d) <- colnames(rel.d)
+        
+        #For each otu
+        for(j in 1:dim(rel.d)[2]){ 
+          # Replace the original taxon vector with a permuted taxon vector
+          perm.rel.d[, j ] <- sample(rel.d[ ,j ]) 
+        }
+        
+        # Do not randomize focal column 
+        perm.rel.d[, which.taxon] <- rel.d[ , which.taxon]
+        
+        # Calculate correlation matrix of permuted matrix
+        cor.mat.null <- cor(perm.rel.d)
+        
+        # For each iteration, save the vector of null matrix correlations between focal taxon and other taxa
+        perm.cor.vec.mat <- cbind(perm.cor.vec.mat, cor.mat.null[, which.taxon])
+        
+      }
+      # Save the median correlations between the focal taxon and all other taxa  
+      med.tax.cors <- cbind(med.tax.cors, apply(perm.cor.vec.mat, 1, median))
+      
+      # For large datasets, this can be helpful to know how long this loop will run
+      if(which.taxon %% 20 == 0){print(which.taxon)}
+    }
+  } , {
+    for(which.taxon in 1:dim(rel.d)[2]){
+      
+      #create vector to hold correlations from every permutation for each single otu
+      ## perm.cor.vec.mat stands for permuted correlations vector matrix
+      perm.cor.vec.mat <- vector()
+      
+      for(i in 1:iter){
+        #Create duplicate matrix to shuffle abundances
+        perm.rel.d <- rel.d 
+        
+        #For each taxon
+        for(j in 1:dim(rel.d)[1]){ 
+          which.replace <- which(rel.d[j, ] > 0 ) 
+          # if the focal taxon is greater than zero, take it out of the replacement vector, so the focal abundance stays the same
+          which.replace.nonfocal <- which.replace[!(which.replace %in% which.taxon)]
+          
+          #Replace the original taxon vector with a vector where the values greater than 0 have been randomly permuted 
+          perm.rel.d[j, which.replace.nonfocal] <- sample(rel.d[ j, which.replace.nonfocal]) 
+        }
+        
+        # Calculate correlation matrix of permuted matrix
+        cor.mat.null <- cor(perm.rel.d)
+        
+        # For each iteration, save the vector of null matrix correlations between focal taxon and other taxa
+        perm.cor.vec.mat <- cbind(perm.cor.vec.mat, cor.mat.null[, which.taxon])
+        
+      }
+      # Save the median correlations between the focal taxon and all other taxa  
+      med.tax.cors <- cbind(med.tax.cors, apply(perm.cor.vec.mat, 1, median))
+      
+      # For large datasets, this can be helpful to know how long this loop will run
+      if(which.taxon %% 20 == 0){print(which.taxon)}
+    }
+  }
+  )
+}
+
+# Save observed minus expected correlations. Use custom correlations if use.custom.cors = TRUE
+ifelse(use.custom.cors == T, {
+  obs.exp.cors.mat <- custom.cor.mat.sub}, {
+    obs.exp.cors.mat <- cor.mat.true - med.tax.cors
+  }
+)
+
+diag(obs.exp.cors.mat) <- 0
+#### 
+#### Produce desired vectors of connectedness and cohesion 
+
+# Calculate connectedness by averaging positive and negative observed - expected correlations
+connectedness.pos <- apply(obs.exp.cors.mat, 2, pos.mean)
+connectedness.neg <- apply(obs.exp.cors.mat, 2, neg.mean)
+
+# Calculate cohesion by multiplying the relative abundance dataset by associated connectedness
+cohesion.pos <- rel.d %*% connectedness.pos
+cohesion.neg <- rel.d %*% connectedness.neg
+####
+#### Combine vectors into one list and print 
+output <- list(connectedness.neg, connectedness.pos, cohesion.neg, cohesion.pos)
+names(output) <- c("Negative Connectedness", "Positive Connectedness", "Negative Cohesion", "Positive Cohesion")
+
+print(output)
+write.csv(output, file = "output.csv")
+
+
+
+###########Natural connectaity
+
+library(ggraph)
+library(vegan)
+library(MCL)
+library(tidyverse)
+library(qgraph)
+
+##Calculate matrix
+##read otu table
+otutab<-read.table("CK.txt",header = T,row.names=1,sep="\t")
+otutab[is.na(otutab)]<-0
+##keep 12 otus
+counts<-rowSums(otutab>0)
+otutab<-otutab[counts>=1,]
+
+comm<-t(otutab)
+sp.ra<-colMeans(comm)/1   #relative abundance of each species
+
+###### there are two choices to get the correlation matrix #######
+###### choice 1 (slow): calculate correlation matrix from OTU table
+cormatrix=matrix(0,ncol(comm),ncol(comm))
+
+for (i in 1:ncol(comm)){
+  for (j in i:ncol(comm)){
+    speciesi<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,i]>0,comm[k,i],ifelse(comm[k,j]>0,0.01,NA))
+    })
+    speciesj<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,j]>0,comm[k,j],ifelse(comm[k,i]>0,0.01,NA))
+    })
+    corij<-cor(log(speciesi)[!is.na(speciesi)],log(speciesj)[!is.na(speciesj)])
+    
+    cormatrix[i,j]<-cormatrix[j,i]<-corij
+    
+  }}
+# ###### end of the two choices of correlation matrix ########
+
+row.names(cormatrix)<-colnames(cormatrix)<-colnames(comm) # if processed using MENAP, OTU order should match in the original OTU table and the correlation matrix downloaded from MENAP.
+
+cormatrix2<-cormatrix*(abs(cormatrix)>=0.80)  #only keep links above the cutoff point
+cormatrix2[is.na(cormatrix2)]<-0
+diag(cormatrix2)<-0    #no links for self-self    
+sum(abs(cormatrix2)>0)/2  #this should be the number of links. 
+sum(colSums(abs(cormatrix2))>0)  # node number: number of species with at least one linkage with others.
+
+network.raw<-cormatrix2[colSums(abs(cormatrix2))>0,colSums(abs(cormatrix2))>0]
+sp.ra2<-sp.ra[colSums(abs(cormatrix2))>0]
+sum(row.names(network.raw)==names(sp.ra2))  #check if matched
+cor.cutoff = 0.3
+cor.adj = ifelse(abs(network.raw) >= cor.cutoff,1,0)
+
+#如此便得到了邻接矩阵格式的网络文件（微生物属的相关系数矩阵）
+write.table(data.frame(cor.adj, check.names = FALSE), 'CK.matrix.txt', col.names = NA, sep = '\t', quote = FALSE)
+
+##read otu table
+otutab<-read.table("TR.txt",header = T,row.names=1,sep="\t")
+otutab[is.na(otutab)]<-0
+##keep 12 otus
+counts<-rowSums(otutab>0)
+otutab<-otutab[counts>=1,]
+
+comm<-t(otutab)
+sp.ra<-colMeans(comm)/1   #relative abundance of each species
+
+###### there are two choices to get the correlation matrix #######
+###### choice 1 (slow): calculate correlation matrix from OTU table
+cormatrix=matrix(0,ncol(comm),ncol(comm))
+
+for (i in 1:ncol(comm)){
+  for (j in i:ncol(comm)){
+    speciesi<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,i]>0,comm[k,i],ifelse(comm[k,j]>0,0.01,NA))
+    })
+    speciesj<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,j]>0,comm[k,j],ifelse(comm[k,i]>0,0.01,NA))
+    })
+    corij<-cor(log(speciesi)[!is.na(speciesi)],log(speciesj)[!is.na(speciesj)])
+    
+    cormatrix[i,j]<-cormatrix[j,i]<-corij
+    
+  }}
+# ###### end of the two choices of correlation matrix ########
+
+row.names(cormatrix)<-colnames(cormatrix)<-colnames(comm) # if processed using MENAP, OTU order should match in the original OTU table and the correlation matrix downloaded from MENAP.
+
+cormatrix2<-cormatrix*(abs(cormatrix)>=0.80)  #only keep links above the cutoff point
+cormatrix2[is.na(cormatrix2)]<-0
+diag(cormatrix2)<-0    #no links for self-self    
+sum(abs(cormatrix2)>0)/2  #this should be the number of links. 
+sum(colSums(abs(cormatrix2))>0)  # node number: number of species with at least one linkage with others.
+
+network.raw<-cormatrix2[colSums(abs(cormatrix2))>0,colSums(abs(cormatrix2))>0]
+sp.ra2<-sp.ra[colSums(abs(cormatrix2))>0]
+sum(row.names(network.raw)==names(sp.ra2))  #check if matched
+cor.cutoff = 0.3
+cor.adj = ifelse(abs(network.raw) >= cor.cutoff,1,0)
+#如此便得到了邻接矩阵格式的网络文件（微生物属的相关系数矩阵）
+write.table(data.frame(cor.adj, check.names = FALSE), 'TR.matrix.txt', col.names = NA, sep = '\t', quote = FALSE)
+library(igraph)
+
+#定义函数，计算网络中节点的重要性，并根据重要性依次移出节点后，计算网络的自然连通度
+nc <- function(g) {
+  natcon <- function(g) {
+    N   <- vcount(g)
+    adj <- get.adjacency(g)
+    evals <- eigen(adj)$value
+    nc <- log(mean(exp(evals)))
+    nc / (N - log(N))
+  }
+  nc.attack <- function(g) {
+    hubord <- order(rank(betweenness(g)), rank(degree(g)), decreasing=TRUE)
+    sapply(1:round(vcount(g)*.8), function(i) {
+      ind <- hubord[1:i]
+      tmp <- delete_vertices(g, V(g)$name[ind])
+      natcon(tmp)
+    })
+  }
+  nc <- nc.attack(g)
+  nc
+}
+
+##来自 3 种环境的微生物网络鲁棒性评估
+library(igraph)
+library(ggplot2)
+
+#读取网络邻接矩阵，数值“1”表示微生物 OTU 之间存在互作，“0”表示无互作
+adj1 <- read.delim('CK.matrix.txt', row.names = 1, sep = '\t')
+adj2 <- read.delim('TR.matrix.txt', row.names = 1, sep = '\t')
+
+g1 <- graph_from_adjacency_matrix(as.matrix(adj1), mode = 'undirected', diag = FALSE)
+g2 <- graph_from_adjacency_matrix(as.matrix(adj2), mode = 'undirected', diag = FALSE)
+
+#计算自然连通度
+g1_nc <- nc(g1)
+g2_nc <- nc(g2)
+dat <- data.frame(
+  network = c(rep('g1', length(g1_nc)), rep('g2', length(g2_nc))), 
+  'Proportion of removes nodes' = c((1:length(g1_nc))/length(g1_nc), (1:length(g2_nc))/length(g2_nc)),
+  'Natural Connectivity' = c(g1_nc, g2_nc), check.names = FALSE
+)
+dat <- subset(dat, `Proportion of removes nodes` <= 0.8)
+#作图
+ggplot(dat, aes(`Proportion of removes nodes`, `Natural Connectivity`, color = network)) +
+  geom_point() +
+  theme_bw() +
+  labs(x = 'Proportion of removes nodes', y = 'Natural Connectivity')
+
+
+#############Robust random
+##read otu table
+otutab<-read.table("CK.txt",header = T,row.names=1,sep="\t")
+otutab[is.na(otutab)]<-0
+##keep 12 otus
+counts<-rowSums(otutab>0)
+otutab<-otutab[counts>=1,]
+
+comm<-t(otutab)
+sp.ra<-colMeans(comm)/1   #relative abundance of each species
+
+###### there are two choices to get the correlation matrix #######
+###### choice 1 (slow): calculate correlation matrix from OTU table
+cormatrix=matrix(0,ncol(comm),ncol(comm))
+
+for (i in 1:ncol(comm)){
+  for (j in i:ncol(comm)){
+    speciesi<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,i]>0,comm[k,i],ifelse(comm[k,j]>0,0.01,NA))
+    })
+    speciesj<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,j]>0,comm[k,j],ifelse(comm[k,i]>0,0.01,NA))
+    })
+    corij<-cor(log(speciesi)[!is.na(speciesi)],log(speciesj)[!is.na(speciesj)])
+    
+    cormatrix[i,j]<-cormatrix[j,i]<-corij
+    
+  }}
+
+# ###### choice 2: directely read in correlation matrix downloaded from MENAP. MENAP downloaded correlation matrix is an upper triangle. Need to make it into a symetric matrix.
+# cormatrix.input  <- matrix(0, 1596, 1596)
+# cormatrix.input[row(cormatrix.input) >= col(cormatrix.input)] <- scan("CKtra.txt")
+# cormatrix <- t(cormatrix.input)
+# for (i in 1:nrow(cormatrix)){
+#   for (j in 1:ncol(cormatrix)){
+#     if (i>j){cormatrix[i,j]<-cormatrix[j,i]}
+#   }
+# }
+# ###### end of the two choices of correlation matrix ########
+
+row.names(cormatrix)<-colnames(cormatrix)<-colnames(comm) # if processed using MENAP, OTU order should match in the original OTU table and the correlation matrix downloaded from MENAP.
+
+cormatrix2<-cormatrix*(abs(cormatrix)>=0.80)  #only keep links above the cutoff point
+cormatrix2[is.na(cormatrix2)]<-0
+diag(cormatrix2)<-0    #no links for self-self    
+sum(abs(cormatrix2)>0)/2  #this should be the number of links. 
+sum(colSums(abs(cormatrix2))>0)  # node number: number of species with at least one linkage with others.
+
+network.raw<-cormatrix2[colSums(abs(cormatrix2))>0,colSums(abs(cormatrix2))>0]
+sp.ra2<-sp.ra[colSums(abs(cormatrix2))>0]
+sum(row.names(network.raw)==names(sp.ra2))  #check if matched
+
+## robustness simulation 
+#input network matrix, percentage of randomly removed species, and ra of all species
+#return the proportion of species remained
+
+rand.remov.once<-function(netRaw, rm.percent, sp.ra, abundance.weighted=T){
+  id.rm<-sample(1:nrow(netRaw), round(nrow(netRaw)*rm.percent))
+  net.Raw=netRaw #don't want change netRaw
+  net.Raw[id.rm,]=0;  net.Raw[,id.rm]=0;   ##remove all the links to these species
+  if (abundance.weighted){
+    net.stength= net.Raw*sp.ra
+  } else {
+    net.stength= net.Raw
+  }
+  
+  sp.meanInteration<-colMeans(net.stength)
+  
+  id.rm2<- which(sp.meanInteration<=0)  ##remove species have negative interaction or no interaction with others
+  remain.percent<-(nrow(netRaw)-length(id.rm2))/nrow(netRaw)
+  #for simplicity, I only consider the immediate effects of removing the
+  #'id.rm' species; not consider the sequential effects of extinction of
+  # the 'id.rm2' species.
+  
+  #you can write out the network pruned
+  #  net.Raw[id.rm2,]=0;  net.Raw[,id.rm2]=0;
+  # write.csv( net.Raw,"network pruned.csv")
+  
+  remain.percent
+}
+
+rm.p.list=seq(0.05,0.2,by=0.05)
+rmsimu<-function(netRaw, rm.p.list, sp.ra, abundance.weighted=T,nperm=100){
+  t(sapply(rm.p.list,function(x){
+    remains=sapply(1:nperm,function(i){
+      rand.remov.once(netRaw=netRaw, rm.percent=x, sp.ra=sp.ra, abundance.weighted=abundance.weighted)
+    })
+    remain.mean=mean(remains)
+    remain.sd=sd(remains)
+    remain.se=sd(remains)/(nperm^0.5)
+    result<-c(remain.mean,remain.sd,remain.se)
+    names(result)<-c("remain.mean","remain.sd","remain.se")
+    result
+  }))
+}
+
+Weighted.simu<-rmsimu(netRaw=network.raw, rm.p.list=seq(0.05,1,by=0.05), sp.ra=sp.ra2, abundance.weighted=T,nperm=100)
+Unweighted.simu<-rmsimu(netRaw=network.raw, rm.p.list=seq(0.05,1,by=0.05), sp.ra=sp.ra2, abundance.weighted=F,nperm=100)
+
+dat1<-data.frame(Proportion.removed=rep(seq(0.05,1,by=0.05),2),rbind(Weighted.simu,Unweighted.simu),
+                 weighted=rep(c("weighted","unweighted"),each=20),
+                 year=rep(2014,20),treat=rep("CK",20))
+
+currentdat<-dat1
+
+write.csv(currentdat,"random_removal_result_CK.csv")
+
+
+#################### Robust target
+##read otu table
+otutab<-read.table("CK.txt",header = T,row.names=1,sep="\t")
+otutab[is.na(otutab)]<-0
+##keep 12 otus
+counts<-rowSums(otutab>0)
+otutab<-otutab[counts>=1,]
+
+comm<-t(otutab)
+sp.ra<-colMeans(comm)/1   #relative abundance of each species
+
+###### there are two choices to get the correlation matrix #######
+###### choice 1 (slow): calculate correlation matrix from OTU table
+cormatrix=matrix(0,ncol(comm),ncol(comm))
+
+for (i in 1:ncol(comm)){
+  for (j in i:ncol(comm)){
+    speciesi<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,i]>0,comm[k,i],ifelse(comm[k,j]>0,0.01,NA))
+    })
+    speciesj<-sapply(1:nrow(comm),function(k){
+      ifelse(comm[k,j]>0,comm[k,j],ifelse(comm[k,i]>0,0.01,NA))
+    })
+    corij<-cor(log(speciesi)[!is.na(speciesi)],log(speciesj)[!is.na(speciesj)])
+    
+    cormatrix[i,j]<-cormatrix[j,i]<-corij
+    
+  }}
+
+# ###### choice 2: directely read in correlation matrix downloaded from MENAP. MENAP downloaded correlation matrix is an upper triangle. Need to make it into a symetric matrix.
+# cormatrix.input  <- matrix(0, 1596, 1596)
+# cormatrix.input[row(cormatrix.input) >= col(cormatrix.input)] <- scan("CKtra.txt")
+# cormatrix <- t(cormatrix.input)
+# for (i in 1:nrow(cormatrix)){
+#   for (j in 1:ncol(cormatrix)){
+#     if (i>j){cormatrix[i,j]<-cormatrix[j,i]}
+#   }
+# }
+# ###### end of the two choices of correlation matrix ########
+
+row.names(cormatrix)<-colnames(cormatrix)<-colnames(comm) # if processed using MENAP, OTU order should match in the original OTU table and the correlation matrix downloaded from MENAP.
+
+cormatrix2<-cormatrix*(abs(cormatrix)>=0.80)  #only keep links above the cutoff point
+cormatrix2[is.na(cormatrix2)]<-0
+diag(cormatrix2)<-0    #no links for self-self    
+sum(abs(cormatrix2)>0)/2  #this should be the number of links. 
+sum(colSums(abs(cormatrix2))>0)  # node number: number of species with at least one linkage with others.
+
+network.raw<-cormatrix2[colSums(abs(cormatrix2))>0,colSums(abs(cormatrix2))>0]
+sp.ra2<-sp.ra[colSums(abs(cormatrix2))>0]
+sum(row.names(network.raw)==names(sp.ra2))  #check if matched
+
+## robustness simulation 
+#input network matrix, number of removed keystone species, keystonespecies list,  and ra of all species
+#return the proportion of species remained
+
+#get the keystone species list
+node.attri<-read.table("NodeAttribute.txt",header = T,sep="\t")
+module.hub<-as.character(node.attri$Name[node.attri$Zi > 2.5 & node.attri$Pi <= 0.62])
+
+#consider cascade effects: removed species will further influence the remaining nodes
+
+rand.remov2.once<-function(netRaw, rm.num, keystonelist, sp.ra, abundance.weighted=T){
+  rm.num2<-ifelse(rm.num > length(keystonelist), length(keystonelist), rm.num)
+  id.rm<-sample(keystonelist, rm.num2)
+  net.Raw=netRaw #don't want change netRaw
+  
+  net.new=net.Raw[!names(sp.ra) %in% id.rm, !names(sp.ra) %in% id.rm]   ##remove all the links to these species
+  if (nrow(net.new)<2){
+    0
+  } else {
+    sp.ra.new=sp.ra[!names(sp.ra) %in% id.rm]
+    
+    if (abundance.weighted){
+      net.stength= net.new*sp.ra.new
+    } else {
+      net.stength= net.new
+    }
+    
+    sp.meanInteration<-colMeans(net.stength)
+    
+    
+    while ( length(sp.meanInteration)>1 & min(sp.meanInteration) <=0){
+      id.remain<- which(sp.meanInteration>0) 
+      net.new=net.new[id.remain,id.remain]
+      sp.ra.new=sp.ra.new[id.remain]
+      
+      if (abundance.weighted){
+        net.stength= net.new*sp.ra.new
+      } else {
+        net.stength= net.new
+      }
+      
+      if (length(net.stength)>1){
+        sp.meanInteration<-colMeans(net.stength)
+      } else{
+        sp.meanInteration<-0
+      }
+      
+    }
+    
+    remain.percent<-length(sp.ra.new)/length(sp.ra)
+    
+    remain.percent}
+}
+
+rm.p.list=seq(0.05,0.2,by=0.05)
+rmsimu<-function(netRaw, rm.p.list, keystonelist,sp.ra, abundance.weighted=T,nperm=100){
+  t(sapply(rm.p.list,function(x){
+    remains=sapply(1:nperm,function(i){
+      rand.remov2.once(netRaw=netRaw, rm.num=x, keystonelist=keystonelist, sp.ra=sp.ra, abundance.weighted=abundance.weighted)
+    })
+    remain.mean=mean(remains)
+    remain.sd=sd(remains)
+    remain.se=sd(remains)/(nperm^0.5)
+    result<-c(remain.mean,remain.sd,remain.se)
+    names(result)<-c("remain.mean","remain.sd","remain.se")
+    result
+  }))
+}
+
+Weighted.simu<-rmsimu(netRaw=network.raw, rm.p.list=1:length(module.hub),keystonelist=module.hub, sp.ra=sp.ra2, abundance.weighted=T,nperm=100)
+Unweighted.simu<-rmsimu(netRaw=network.raw, rm.p.list=1:length(module.hub), keystonelist=module.hub, sp.ra=sp.ra2, abundance.weighted=F,nperm=100)
+
+dat1<-data.frame(Number.hub.removed=rep(1:length(module.hub),2),rbind(Weighted.simu,Unweighted.simu),
+                 weighted=rep(c("weighted","unweighted"),each=length(module.hub)),
+                 year=rep(2014,2*length(module.hub)),treat=rep("warmed",2*length(module.hub)))
+
+currentdat = dat1
+write.csv(currentdat,"targeted_CK.csv")
+
+
+
+
+
+
 ######### (based on Ubuntu 22.04.3 LTS)
 
 ### download NCBI data
